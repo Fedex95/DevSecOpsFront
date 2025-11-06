@@ -1,4 +1,4 @@
-name: DevSecOps Frontend
+name: CD DevSecFrontend
 
 on:
   push:
@@ -6,48 +6,31 @@ on:
       - main
 
 jobs:
-  deploy:
+  build-and-push:
+    name: Build and Push Image
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-
-      - name: Cache Node.js dependencies
-        uses: actions/cache@v3
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build frontend
-        run: npm run build
-
-      - name: Build Docker image
-        run: |
-          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/deploy-frontend:${{ github.sha }} .
 
       - name: Login Docker Hub
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
 
-      - name: Push Docker image
+      - name: Build and push Docker image
         run: |
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/deploy-frontend:${{ github.sha }}
-          docker tag ${{ secrets.DOCKERHUB_USERNAME }}/deploy-frontend:${{ github.sha }} ${{ secrets.DOCKERHUB_USERNAME }}/deploy-frontend:latest
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/deploy-frontend:latest
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/deploy-devsecops-frontend:${{ github.sha }} .
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/deploy-devsecops-frontend:${{ github.sha }}
 
+  deploy-staging:
+    name: Deploy to Preproduction
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
       - name: Setup SSH
         uses: shimataro/ssh-key-action@v2
         with:
@@ -59,26 +42,86 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -p 22 -H ${{ secrets.EC2_PUBLIC_IP }} >> ~/.ssh/known_hosts
 
-      - name: Deploy frontend on EC2
+      - name: Deploy frontend on EC2 (staging)
+        run: |
+          ssh ec2-user@${{ secrets.EC2_PUBLIC_IP }} << EOF
+            set -euo pipefail
+            docker network create bdd_nginx_app-network || true
+            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/deploy-devsecops-frontend:${{ github.sha }}
+            docker stop frontend_preprod || true
+            docker rm frontend_preprod || true
+            docker run -d --name frontend_preprod --network bdd_nginx_app-network -p 8082:8080 \
+              ${{ secrets.DOCKERHUB_USERNAME }}/deploy-devsecops-frontend:${{ github.sha }}
+          EOF
+
+  run-dast:
+    name: Run DAST on Preproduction
+    runs-on: self-hosted
+    needs: deploy-staging
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Run DAST with ZAP
+        shell: cmd
+        run: dast.bat "%GITHUB_WORKSPACE%"
+        env:
+          ZAP_URL: http://${{ secrets.EC2_PUBLIC_IP }}:8082
+      - name: Fail on any alerts (High/Medium/Low/Informational)
+        shell: powershell
+        run: |
+          if (!(Test-Path "report.json")) { Write-Error "report.json not found"; exit 1 }
+          $json = Get-Content -Raw -Path "report.json" | ConvertFrom-Json
+          $sites = if ($json.site -is [System.Array]) { $json.site } else { @($json.site) }
+          $alerts = @()
+          foreach ($s in $sites) { if ($s.alerts) { $alerts += $s.alerts } }
+          $high   = ($alerts | Where-Object { $_.risk -eq "High" -or $_.riskdesc -like "High*" }).Count
+          $medium = ($alerts | Where-Object { $_.risk -eq "Medium" -or $_.riskdesc -like "Medium*" }).Count
+          $low    = ($alerts | Where-Object { $_.risk -eq "Low" -or $_.riskdesc -like "Low*" }).Count
+          $info   = ($alerts | Where-Object { $_.risk -eq "Informational" -or $_.riskdesc -like "Informational*" }).Count
+          Write-Host "ZAP alerts => High: $high, Medium: $medium, Low: $low, Informational: $info"
+          if ($high -gt 0 -or $medium -gt 0 -or $low -gt 0 -or $info -gt 0) { throw "Failing pipeline: High=$high Medium=$medium Low=$low Informational=$info" }
+      - name: Upload DAST report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dast-report
+          path: |
+            report.html
+            report.json
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: run-dast
+    if: needs.run-dast.result == 'success'  
+
+    steps:
+      - name: Setup SSH
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.EC2_SSH_KEY }}
+          known_hosts: unnecessary
+
+      - name: Add EC2 prod to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p 22 -H ${{ secrets.EC2_PUBLIC_IP }} >> ~/.ssh/known_hosts
+
+      - name: Clean up Production
+        run: |
+          ssh ec2-user@${{ secrets.EC2_PUBLIC_IP }} << 'EOF'
+            docker stop frontend_prod || true
+            docker rm frontend_prod || true
+          EOF
+
+      - name: Deploy frontend on EC2 (production)
         run: |
           ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=10 ec2-user@${{ secrets.EC2_PUBLIC_IP }} << EOF
             set -euo pipefail
-
-            echo "Pulling image from Docker Hub"
-            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/deploy-frontend:${{ github.sha }}
-
-            echo "Stopping old container if exists..."
-            docker stop frontend || echo "No container running"
-            docker rm frontend || echo "No container to remove"
-
-            echo "Running new container..."
-            docker run -d --name frontend --network bdd_nginx_app-network \
-              ${{ secrets.DOCKERHUB_USERNAME }}/deploy-frontend:${{ github.sha }}
-
-            echo "Verifying container..."
-            docker ps
-            echo "Last logs:"
-            docker logs frontend | tail -20
-
-            echo "Deployment completed successfully"
+            docker network create bdd_nginx_app-network || true
+            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/deploy-devsecops-frontend:${{ github.sha }}
+            docker stop frontend_prod || true
+            docker rm frontend_prod || true
+            docker run -d --name frontend_prod --network bdd_nginx_app-network -p 8080:8080 \
+              ${{ secrets.DOCKERHUB_USERNAME }}/deploy-devsecops-frontend:${{ github.sha }}
           EOF

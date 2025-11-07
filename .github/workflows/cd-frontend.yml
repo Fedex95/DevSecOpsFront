@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
 
       - name: Login Docker Hub
         uses: docker/login-action@v2
@@ -60,7 +60,7 @@ jobs:
     needs: deploy-staging
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
       - name: Run DAST with ZAP
         shell: cmd
         run: dast.bat "%GITHUB_WORKSPACE%"

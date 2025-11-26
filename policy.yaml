@@ -23,9 +23,6 @@ jobs:
   - type: passiveScan-config
     parameters: {}
 
-  - type: passiveScan-wait
-    parameters: {}
-
   - type: activeScan-config
     parameters:
       threadPerHost: 5
@@ -56,6 +53,9 @@ jobs:
         - id: 40014
           strength: High
           threshold: Low
+
+  - type: passiveScan-wait
+    parameters: {}
 
   - type: report
     parameters:

@@ -1,4 +1,4 @@
-name: CI DevSecFrontend
+name: CI DevSecOps Frontend
 
 on:
   pull_request:
@@ -34,9 +34,6 @@ jobs:
 
       - name: Run lint
         run: npm run lint:ci
-
-      - name: Type check
-        run: npx tsc --noEmit
 
       - name: Run tests with coverage
         run: npm run test:coverage

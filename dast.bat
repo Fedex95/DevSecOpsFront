@@ -16,5 +16,5 @@ set "REPO_SAFE=%REPO_DIR:\=/%"
 
 powershell -NoProfile -Command "$p='%PLAN%';$c=[IO.File]::ReadAllText($p);$repo='%REPO_SAFE%';$url=$env:ZAP_URL;$hostport=($url -replace '^https?://','');$openapi=$url + '/v3/api-docs';$c=$c.Replace('FULL_URL',$url).Replace('HOSTPORT',$hostport).Replace('OPENAPI_URL',$openapi).Replace('REPORT_DIR',$repo);[IO.File]::WriteAllText($p,$c)"
 
-call zap.bat -cmd -dir "%ZAP_HOME%" -autorun "%PLAN%"
+call zap.bat -cmd -dir "%ZAP_HOME%" -config network.connection.sslTolerateAllCertificateErrors=true -autorun "%PLAN%"
 exit /b %ERRORLEVEL%

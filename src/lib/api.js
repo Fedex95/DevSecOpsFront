@@ -1,5 +1,5 @@
 function buildUrl(path) {
-  return `http://localhost:8080${path.startsWith('/') ? '' : '/'}${path}`;
+  return `${path.startsWith('/') ? '' : '/'}${path}`;
 }
 
 export async function apiFetch(path, options = {}) {

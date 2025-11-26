@@ -14,12 +14,6 @@ env:
     progressToStdout: true
 
 jobs:
-  - type: spider
-    parameters:
-      context: "Default Context"
-      maxDuration: 8
-      maxChildren: 300
-
   - type: passiveScan-config
     parameters: {}
 
